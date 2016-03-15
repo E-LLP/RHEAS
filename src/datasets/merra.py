@@ -14,6 +14,7 @@ import os
 from datetime import timedelta
 import dbio
 import datasets
+import rpath
 
 
 def dates(dbname):
@@ -46,20 +47,25 @@ def _downloadVariable(varname, dbname, dts, bbox):
             lat = ds.variables["lat"][:]
             lon = ds.variables["lon"][:]
             lon[lon > 180] -= 360.0
-            i1, i2, j1, j2 = datasets.spatialSubset(lat, lon, res, bbox)
-            lat = lat[i1:i2]
-            lon = lon[j1:j2]
+            i1, i2, j1, j2 = datasets.spatialSubset(np.sort(lat)[::-1], np.sort(lon), res, bbox)
             data = np.zeros((i2-i1, j2-j1))
+            lati = np.argsort(lat)[::-1][i1:i2]
+            loni = np.argsort(lon)[j1:j2]
             if varname == "tmax":
-                hdata = ds.variables["T2M"][:, i1:i2, j1:j2]
+                hdata = ds.variables["T2M"][:, lati, loni]
                 data = np.amax(hdata, axis=0) - 273.15
             elif varname == "tmin":
-                hdata = ds.variables["T2M"][:, i1:i2, j1:j2]
+                hdata = ds.variables["T2M"][:, lati, loni]
                 data = np.amin(hdata, axis=0) - 273.15
             elif varname in ["wind"]:
-                hdata = np.sqrt(ds.variables["U10M"][:, i1:i2, j1:j2]**2 + ds.variables["V10M"][:, i1:i2, j1:j2]**2)
+                hdata = np.sqrt(ds.variables["U10M"][:, lati, loni]**2 + ds.variables["V10M"][:, lati, loni]**2)
                 data = np.mean(hdata, axis=0)
-            filename = dbio.writeGeotif(lat, lon, res, data)
+            lat = np.sort(lat)[::-1][i1:i2]
+            lon = np.sort(lon)[j1:j2]
+            if not os.path.isdir("{0}/{1}/merra".format(rpath.data, varname)):
+                os.mkdir("{0}/{1}/merra".format(rpath.data, varname))
+            filename = "{0}/{1}/merra/merra_{2}.tif".format(rpath.data, varname, ts.strftime("%Y%m%d"))
+            dbio.writeGeotif(lat, lon, res, data, filename)
             dbio.ingest(dbname, filename, ts, "{0}.merra".format(varname))
             os.remove(filename)
         except:

@@ -19,6 +19,7 @@ import subprocess
 import glob
 import shutil
 import numpy as np
+import rpath
 
 
 table = "snow.modscag"
@@ -63,8 +64,9 @@ def download(dbname, dts, bbox):
                     pstr = []
                 else:
                     pstr = ["-projwin", str(bbox[0]), str(bbox[3]), str(bbox[2]), str(bbox[1])]
-                subprocess.call(["gdal_translate", "-a_srs", "epsg:4326"] + pstr + ["{0}/snow2.tif".format(temppath), "{0}/snow3.tif".format(temppath)])
-                dbio.ingest(dbname, "{0}/snow3.tif".format(temppath), dt, table, False)
+                filename = "{0}/snow/modscag/modscag_{1}.tif".format(rpath.data, dt.strftime("%Y%m%d"))
+                subprocess.call(["gdal_translate", "-a_srs", "epsg:4326"] + pstr + ["{0}/snow2.tif".format(temppath), filename])
+                dbio.ingest(dbname, filename, dt, table, False)
                 shutil.rmtree(temppath)
             else:
                 print("MODSCAG data not available for {0}. Skipping download!".format(

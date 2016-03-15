@@ -15,6 +15,7 @@ import tempfile
 import subprocess
 import zipfile
 import dbio
+import rpath
 
 
 table = {"ppt": "precip.prism", "tmax": "tmax.prism", "tmin": "tmin.prism"}
@@ -47,12 +48,13 @@ def _downloadVariable(varname, dbname, dts, bbox):
                 fz.extractall(outpath)
             else:
                 lfilename = fname
-            tfilename = lfilename.replace(".bil", ".tif")
-            if bbox is not None:
-                subprocess.call(["gdal_translate", "-projwin", "{0}".format(bbox[0]), "{0}".format(bbox[3]), "{0}".format(bbox[2]), "{0}".format(bbox[1]), "{0}/{1}".format(outpath, lfilename), "{0}/{1}".format(outpath, tfilename)])
-                dbio.ingest(dbname, "{0}/{1}".format(outpath, tfilename), dt, table[varname], False)
-            else:
-                dbio.ingest(dbname, "{0}/{1}".format(outpath, lfilename), dt, table[varname], False)
+            filename = "{0}/precip/prism/prism_{1}.tif".format(rpath.data, dt.strftime("%Y%m%d"))
+            if bbox is None:
+                    pstr = []
+                else:
+                    pstr = ["-projwin", str(bbox[0]), str(bbox[3]), str(bbox[2]), str(bbox[1])]
+            subprocess.call(["gdal_translate", "-a_srs", "epsg:4326"] + pstr + ["{0}/{1}".format(outpath, lfilename), filename])
+            dbio.ingest(dbname, filename, dt, table[varname], False)
         ftp.cwd("..")
 
 

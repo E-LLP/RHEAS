@@ -12,9 +12,11 @@ from ftplib import FTP
 from datetime import datetime, timedelta
 import tempfile
 import subprocess
+import re
+import os
 import datasets
 import dbio
-import re
+import rpath
 
 
 table = "precip.gpm"
@@ -34,26 +36,27 @@ def download(dbname, dts, bbox):
     ftp.login('kandread@jpl.nasa.gov', 'kandread@jpl.nasa.gov')
     ftp.cwd("data/imerg/gis")
     outpath = tempfile.mkdtemp()
-    ts = list(set([(t.year, t.month) for t in [dts[0] + timedelta(dti) for dti in range((dts[1] - dts[0]).days + 1)]]))
-    for t in ts:
-        try:
-            ftp.cwd("{0}/{1:02d}".format(t[0], t[1]))
-            filenames = [f for f in ftp.nlst() if datetime.strptime(f.split(".")[-5].split("-")[0], "%Y%m%d") >= dts[0] and datetime.strptime(f.split(".")[-5].split("-")[0], "%Y%m%d") <= dts[1] and re.match(r'3B.*S000000.*1day\.tif', f) is not None]
-            for fname in filenames:
-                dt = datetime.strptime(fname.split(".")[-5].split("-")[0], "%Y%m%d")
-                with open("{0}/{1}".format(outpath, fname), 'wb') as f:
-                    ftp.retrbinary("RETR {0}".format(fname), f.write)
-                with open("{0}/{1}".format(outpath, fname.replace(".tif", ".tfw")), 'wb') as f:
-                    ftp.retrbinary("RETR {0}".format(fname.replace(".tif", ".tfw")), f.write)
-                subprocess.call(["gdalwarp", "-t_srs", "epsg:4326", "{0}/{1}".format(outpath, fname), "{0}/prec.tif".format(outpath)])
-                if bbox is not None:
-                    subprocess.call(["gdal_translate", "-a_srs", "epsg:4326", "-projwin", "{0}".format(bbox[0]), "{0}".format(bbox[3]), "{0}".format(bbox[2]), "{0}".format(bbox[1]), "{0}/prec.tif".format(outpath), "{0}/prec1.tif".format(outpath)])
-                else:
-                    subprocess.call(["gdal_translate", "-a_srs", "epsg:4326", "{0}/prec.tif".format(outpath), "{0}/prec1.tif".format(outpath)])
-                # multiply by 0.1 to get mm/hr and 24 to get mm/day
-                cmd = " ".join(["gdal_calc.py", "-A", "{0}/prec1.tif".format(outpath), "--outfile={0}/prec2.tif".format(outpath), "--calc=\"0.1*A\""])
-                subprocess.call(cmd, shell=True)
-                dbio.ingest(dbname, "{0}/prec2.tif".format(outpath), dt, table, False)
-            ftp.cwd("../..")
-        except:
-            print("GPM data not available for {0}/{1}. Skipping download!".format(t[0], t[1]))
+    for dt in [dts[0] + timedelta(t) for t in range((dts[1] - dts[0]).days+1)]:
+        ftp.cwd("/data/imerg/gis/{0}/{1}".format(dt.year, dt.month))
+        filenames = [f for f in ftp.nlst() if re.match(r"3B.*{0}.*S000000.*1day\.tif.*".format(dt.strftime("%Y%m%d")), f) is not None]
+        if len(filenames) > 0:
+            fname = filenames[0]
+            with open("{0}/{1}".format(outpath, fname), 'wb') as f:
+                ftp.retrbinary("RETR {0}".format(fname), f.write)
+            with open("{0}/{1}".format(outpath, fname.replace("tif", "tfw")), 'wb') as f:
+                ftp.retrbinary("RETR {0}".format(fname.replace("tif", "tfw")), f.write)
+            tfname = fname.replace("tif", "tfw")
+            fname = datasets.uncompress(fname, outpath)
+            datasets.uncompress(tfname, outpath)
+            subprocess.call(["gdalwarp", "-t_srs", "epsg:4326", "{0}/{1}".format(outpath, fname), "{0}/prec.tif".format(outpath)])
+            if bbox is not None:
+                subprocess.call(["gdal_translate", "-a_srs", "epsg:4326", "-projwin", "{0}".format(bbox[0]), "{0}".format(bbox[3]), "{0}".format(bbox[2]), "{0}".format(bbox[1]), "{0}/prec.tif".format(outpath), "{0}/prec1.tif".format(outpath)])
+            else:
+                subprocess.call(["gdal_translate", "-a_srs", "epsg:4326", "{0}/prec.tif".format(outpath), "{0}/prec1.tif".format(outpath)])
+            # multiply by 0.1 to get mm/hr and 24 to get mm/day
+            if not os.path.isdir("{0}/precip/gpm".format(rpath.data)):
+                os.mkdir("{0}/precip/gpm".format(rpath.data))
+            filename = "{0}/precip/gpm/gpm_{1}.tif".format(rpath.data, dt.strftime("%Y%m%d"))
+            cmd = " ".join(["gdal_calc.py", "-A", "{0}/prec1.tif".format(outpath), "--outfile={0}".format(filename), "--calc=\"0.1*A\""])
+            subprocess.call(cmd, shell=True)
+            dbio.ingest(dbname, filename, dt, table, False)
