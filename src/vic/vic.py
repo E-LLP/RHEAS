@@ -543,7 +543,7 @@ class VIC:
                 # if np.all(data[t, lyr, :, :]):
                 self._writeRaster(data[t, lyr, :, :], filename)
                 tiffiles.append(filename)
-        ps = subprocess.Popen(["{0}/raster2pgsql".format(rpath.bins), "-R", "-s", "4326", "-F", "-d", "-t", "auto"] + tiffiles + ["temp"], stdout=subprocess.PIPE)
+        ps = subprocess.Popen(["{0}/raster2pgsql".format(rpath.bins), "-R", "-s", "4326", "-F", "-d"] + tiffiles + ["temp"], stdout=subprocess.PIPE)
         subprocess.Popen(["{0}/psql".format(rpath.bins), "-d", self.dbname], stdin=ps.stdout)
         ps.stdout.close()
         ps.wait()
@@ -585,6 +585,8 @@ class VIC:
             output = self.readOutput(args)
             for var in output:
                 if var != "date":
+                    if not os.path.isdir("{0}/{1}".format(rpath.data, self.name)):
+                        os.mkdir("{0}/{1}".format(rpath.data, self.name))
                     self.writeToDB(output[var], output[
                                    "date"], "{0}".format(var), initialize, skipsave=skipsave)
         else:
