@@ -7,6 +7,7 @@
 
 """
 
+from __future__ import division
 import output as vicoutput
 from osgeo import ogr, gdal, osr
 import decimal
@@ -41,9 +42,11 @@ class VIC:
         self.startyear = startyear
         self.startmonth = startmonth
         self.startday = startday
+        self.startdate = datetime(startyear, startmonth, startday)
         self.endyear = endyear
         self.endmonth = endmonth
         self.endday = endday
+        self.enddate = datetime(endyear, endmonth, endday)
         self.nlayers = nlayer
         self.dbname = dbname
         db = dbio.connect(dbname)
@@ -87,7 +90,7 @@ class VIC:
         filename = "{0}/{1}".format(rpath.data, snowbands)
         with file(filename) as f:
             line = f.readline()
-        return (len(line.split()) - 1) / 3
+        return int((len(line.split()) - 1) / 3)
 
     def writeSoilFile(self, shapefile):
         """Write soil parameter file for current simulation based on basin shapefile."""
@@ -434,14 +437,13 @@ class VIC:
 
     def readOutput(self, args):
         """Reads VIC output for selected variables."""
-        droughtvars = ["spi1", "spi3", "spi6",
-                       "spi12", "severity", "dryspells"]
+        droughtvars = ["spi1", "spi3", "spi6", "spi12", "sri1", "sri3", "sri6", "sri12", "severity", "dryspells", "smdi"]
         layervars = ["soil_moist", "soil_temp", "smliqfrac", "smfrozfrac"]
         outvars = self.getOutputStruct(self.model_path + "/global.txt")
         outdata = {}
         if len(self.lat) > 0 and len(self.lon) > 0:
-            nrows = np.round((max(self.lat) - min(self.lat)) / self.res) + 1
-            ncols = np.round((max(self.lon) - min(self.lon)) / self.res) + 1
+            nrows = int(np.round((max(self.lat) - min(self.lat)) / self.res) + 1)
+            ncols = int(np.round((max(self.lon) - min(self.lon)) / self.res) + 1)
             nt = (date(self.endyear, self.endmonth, self.endday) -
                   date(self.startyear + self.skipyear, self.startmonth, self.startday)).days + 1
             args = vicoutput.variableGroup(args)
@@ -482,9 +484,10 @@ class VIC:
                             outdata[v][:, 0, i, j] = pdata[
                                 outvars[v][0]][:, outvars[v][1]]
                     print "Read output for {0}|{1}".format(self.lat[c], self.lon[c])
-                year = pdata[list(prefix)[0]][:, 0]
-                month = pdata[list(prefix)[0]][:, 1]
-                day = pdata[list(prefix)[0]][:, 2]
+                dts = [date(self.startyear + self.skipyear, self.startmonth, self.startday) + timedelta(t) for t in range(nt)]
+                year = [t.year for t in dts]
+                month = [t.month for t in dts]
+                day = [t.day for t in dts]
                 outdata["date"] = numpy.array(
                     [datetime(int(year[t]), int(month[t]), int(day[t])) for t in range(len(year))])
         else:
@@ -509,22 +512,23 @@ class VIC:
         """Writes output data into database."""
         db = dbio.connect(self.dbname)
         cur = db.cursor()
-        cur.execute(
-            "select * from information_schema.tables where table_name='{0}' and table_schema='{1}'".format(tablename, self.name))
-        # FIXME: Check earliest date to be saved: if it overlaps with existing
-        # table, create new table; else append to table
-        if initialize and bool(cur.rowcount):
+        if dbio.tableExists(self.dbname, self.name, tablename) and ensemble and not dbio.columnExists(self.dbname, self.name, tablename, "ensemble"):
+            print("WARNING! Table {0} exists but does not contain ensemble information. Overwriting entire table!")
             cur.execute("drop table {0}.{1}".format(self.name, tablename))
-        if initialize or not bool(cur.rowcount):
+            db.commit()
+        if dbio.tableExists(self.dbname, self.name, tablename):
+            if initialize:
+                for dt in [self.startdate + timedelta(t) for t in range((self.enddate - self.startdate).days+1)]:
+                    dbio.deleteRasters(self.dbname, "{0}.{1}".format(self.name, tablename), dt)
+        else:
             sql = "create table {0}.{1} (id serial not null primary key, rid int not null, fdate date not null, rast raster)".format(
                 self.name, tablename)
             cur.execute(sql)
             if data.shape[1] > 1:
-                cur.execute("alter table {0}.{1} add column layer int".format(
-                    self.name, tablename))
+                cur.execute("alter table {0}.{1} add column layer int".format(self.name, tablename))
             if ensemble:
-                cur.execute("alter table {0}.{1} add column ensemble int".format(
-                    self.name, tablename))
+                cur.execute("alter table {0}.{1} add column ensemble int".format(self.name, tablename))
+            db.commit()
         startyear, startmonth, startday = self.startyear, self.startmonth, self.startday
         if skipsave > 0:
             ts = date(self.startyear, self.startmonth,
@@ -537,13 +541,13 @@ class VIC:
             for lyr in range(data.shape[1]):
                 filename = "{0}/{1}_{2}{3:02d}{4:02d}_{5:02d}.tif".format(
                     self.model_path, tablename, dt.year, dt.month, dt.day, lyr + 1)
-                # if np.all(data[t, lyr, :, :]):
                 self._writeRaster(data[t, lyr, :, :], filename)
                 tiffiles.append(filename)
-        ps = subprocess.Popen(["{0}/raster2pgsql".format(rpath.bins), "-s", "4326", "-F", "-d", "-t", "auto"] + tiffiles + ["temp"], stdout=subprocess.PIPE)
-        subprocess.Popen(["{0}/psql".format(rpath.bins), "-d", self.dbname], stdin=ps.stdout)
-        ps.stdout.close()
-        ps.wait()
+        ps1 = subprocess.Popen(["{0}/raster2pgsql".format(rpath.bins), "-s", "4326", "-F", "-d", "-t", "auto"] + tiffiles + ["temp"], stdout=subprocess.PIPE)
+        ps2 = subprocess.Popen(["{0}/psql".format(rpath.bins), "-d", self.dbname], stdin=ps1.stdout, stdout=subprocess.PIPE)
+        ps1.stdout.close()
+        ps2.communicate()[0]
+        ps1.wait()
         cur.execute("alter table temp add column fdate date")
         cur.execute("update temp set fdate = date (concat_ws('-',substring(filename from {0} for 4),substring(filename from {1} for 2),substring(filename from {2} for 2)))".format(
             len(tablename) + 2, len(tablename) + 6, len(tablename) + 8))

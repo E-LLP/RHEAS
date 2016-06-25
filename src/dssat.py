@@ -76,7 +76,7 @@ def _run1(modelpath, exe, assimilate="Y"):
 class DSSAT:
 
     def __init__(self, dbname, name, resolution, startyear, startmonth, startday,
-                 endyear, endmonth, endday, nens, vicopts, shapefile=None):
+                 endyear, endmonth, endday, nens, vicopts, shapefile=None, assimilate="Y"):
         self.path = tempfile.mkdtemp(dir=".")
         self.startyear = startyear
         self.startmonth = startmonth
@@ -93,6 +93,7 @@ class DSSAT:
         self.res = resolution
         self.nens = nens
         self.shapefile = shapefile
+        self.assimilate = assimilate
         try:
             self.grid_decimal = - \
                 (decimal.Decimal(self.res).as_tuple().exponent - 1)
@@ -161,7 +162,7 @@ class DSSAT:
                 datestr = str(int(year[p]))[-2:] + date(int(year[p]),
                                                         int(month[p]), int(day[p])).strftime("%j")
                 fout.write("{0}  {1:4.1f}  {2:4.1f}  {3:4.1f}  {4:4.1f}\n".format(
-                    datestr, data[ens][p, 0], data[ens][p, 1], data[ens][p, 2], data[ens][p, 3]))
+                    datestr, data[ens][p, 0] * 0.086400, data[ens][p, 1], data[ens][p, 2], data[ens][p, 3]))
             fout.close()
 
     def _readVICOutputFromFile(self, lat, lon, depths, filespath):
@@ -223,25 +224,31 @@ class DSSAT:
             sql = "select {0}, avg((st_summarystats(rast)).mean) from {1}.{2}, {1}.agareas where st_intersects(rast,geom) and gid={3} and {4} group by gid,{0} order by fdate".format(
                 string.join(sqlvars, ","), self.name, varname, gid, date_sql)
             cur.execute(sql)
-            results = cur.fetchall()
-            if "ensemble" in sqlvars:
-                vicnens = np.max([r[1] for r in results])
-                data[varname] = [np.array(
-                    [r[-1] for r in results if r[1] == ens + 1]) for ens in range(vicnens)]
-                if "layer" in sqlvars:
-                    layers = np.array([r[2] for r in results if r[1] == 1])
-                year = np.array([r[0].year for r in results if r[1] == 1])
-                month = np.array([r[0].month for r in results if r[1] == 1])
-                day = np.array([r[0].day for r in results if r[1] == 1])
-            else:
-                data[varname] = np.array([r[-1] for r in results])
-                if "layer" in sqlvars:
-                    layers = np.array([r[1] for r in results])
-                year = np.array([r[0].year for r in results])
-                month = np.array([r[0].month for r in results])
-                day = np.array([r[0].day for r in results])
-        assert len(year) == ndays and len(month) == ndays and len(day) == ndays
-        nlayers = np.max(layers)
+            if bool(cur.rowcount):
+                results = cur.fetchall()
+                if "ensemble" in sqlvars:
+                    vicnens = np.max([r[1] for r in results])
+                    data[varname] = [np.array(
+                        [r[-1] for r in results if r[1] == ens + 1]) for ens in range(vicnens)]
+                    if "layer" in sqlvars:
+                        layers = np.array([r[2] for r in results if r[1] == 1])
+                        nlayers = np.max(layers)
+                    else:
+                        year = np.array([r[0].year for r in results if r[1] == 1])
+                        month = np.array([r[0].month for r in results if r[1] == 1])
+                        day = np.array([r[0].day for r in results if r[1] == 1])
+                else:
+                    data[varname] = np.array([r[-1] for r in results])
+                    if "layer" in sqlvars:
+                        layers = np.array([r[1] for r in results])
+                        nlayers = np.max(layers)
+                    else:
+                        year = np.array([r[0].year for r in results])
+                        month = np.array([r[0].month for r in results])
+                        day = np.array([r[0].day for r in results])
+                assert len(year) == ndays and len(month) == ndays and len(day) == ndays
+        cur.close()
+        db.close()
         if "ensemble" in sqlvars:
             weather = [np.vstack((data["net_short"][e] + data["net_long"][e], data["tmax"][
                                  e], data["tmin"][e], data["rainf"][e])).T for e in range(len(data["net_short"]))]
@@ -263,8 +270,9 @@ class DSSAT:
             for l in range(nlayers):
                 sm[:, l] = [m for mi, m in enumerate(
                     data["soil_moist"]) if layers[mi] == l + 1]
-        cur.close()
-        db.close()
+        # else:
+        #     print("Error! VIC simulation does not contain any data. Exiting...")
+        #     sys.exit()
         return year, month, day, weather, sm, lai
 
     def writeLAI(self, modelpath, gid, viclai=None, tablename="lai.modis"):
@@ -294,7 +302,7 @@ class DSSAT:
         startdate = date(self.startyear, 1, 1)
         for t in range((enddate - startdate).days + 1):
             dt = startdate + timedelta(t)
-            if dt in lai:
+            if lai is not None and dt in lai:
                 fout.write("{0:.1f}\n".format(lai[dt]))
             else:
                 fout.write("-9999.0\n")
@@ -696,7 +704,7 @@ class DSSAT:
                 self.shapefile))
             sys.exit()
 
-    def run(self, dssatexe, crop_threshold=0.1, assimilate="Y"):
+    def run(self, dssatexe, crop_threshold=0.1):
         """Runs DSSAT simulation."""
         exe = dssatexe.split("/")[-1]
         startdt = date(self.startyear, self.startmonth, self.startday)
@@ -760,7 +768,7 @@ class DSSAT:
                     os.chdir(pwd)
         p = multiprocessing.Pool(multiprocessing.cpu_count())
         for modelpath in modelpaths.values():
-            p.apply_async(_run1, (modelpath, exe, assimilate))
+            p.apply_async(_run1, (modelpath, exe, self.assimilate))
         p.close()
         p.join()
         os.chdir(pwd)

@@ -11,8 +11,10 @@ temperature from the NCEP Reanalysis stored at the IRI Data Library.
 import netCDF4 as netcdf
 import numpy as np
 import os
+from datetime import timedelta
 import dbio
 import datasets
+from decorators import resetDatetime
 
 
 def dates(dbname):
@@ -39,40 +41,35 @@ def _downloadVariable(varname, dbname, dt, bbox=None):
         lat = pds.variables["Y"][:]
         lon = pds.variables["X"][:]
         lon[lon > 180] -= 360.0
-        i1, i2, j1, j2 = datasets.spatialSubset(lat, lon, res, bbox)
-        lat = lat[i1:i2]
-        lon = lon[j1:j2]
-        # if bbox is not None:
-        #     i = np.where(np.logical_and(lat > bbox[1], lat < bbox[3]))[0]
-        #     j = np.where(np.logical_and(lon > bbox[0], lon < bbox[2]))[0]
-        #     lat = lat[i]
-        #     lon = lon[j]
-        # else:
-        #     i = range(len(lat))
-        #     j = range(len(lon))
+        i1, i2, j1, j2 = datasets.spatialSubset(np.sort(lat)[::-1], np.sort(lon), res, bbox)
         t = pds.variables["T"]
         tt = netcdf.num2date(t[:], units=t.units)
-        ti = [tj for tj in range(len(tt)) if tt[tj] >= dt[
-            0] and tt[tj] <= dt[1]]
-        if data is None:
-            # data = pds.variables[dsvar[ui]][ti, 0, i, j]
-            data = pds.variables[dsvar[ui]][ti, 0, i1:i2, j1:j2]
-        else:
-            # data = np.sqrt(
-            #     data ** 2.0 + pds.variables[dsvar[ui]][ti, 0, i, j] ** 2.0)
-            data = np.sqrt(
-                data ** 2.0 + pds.variables[dsvar[ui]][ti, 0, i1:i2, j1:j2] ** 2.0)
-    if "temp" in dsvar:
-        data -= 273.15
-    for tj in range(data.shape[0]):
-        filename = dbio.writeGeotif(lat, lon, res, data[tj, :, :])
-        dbio.ingest(dbname, filename, tt[ti[tj]], "{0}.ncep".format(varname))
+        # ti = [tj for tj in range(len(tt)) if tt[tj] >= dt]
+        ti = [tj for tj in range(len(tt)) if resetDatetime(tt[tj]) >= dt[0] and resetDatetime(tt[tj]) <= dt[1]]
+        if len(ti) > 0:
+            lati = np.argsort(lat)[::-1][i1:i2]
+            loni = np.argsort(lon)[j1:j2]
+            if data is None:
+                data = pds.variables[dsvar[ui]][ti, 0, lati, loni]
+            else:
+                data = np.sqrt(
+                    data ** 2.0 + pds.variables[dsvar[ui]][ti, 0, lati, loni] ** 2.0)
+        if "temp" in dsvar:
+            data -= 273.15
+        lat = np.sort(lat)[::-1][i1:i2]
+        lon = np.sort(lon)[j1:j2]
+    table = "{0}.ncep".format(varname)
+    for t in range(len(ti)):
+        filename = dbio.writeGeotif(lat, lon, res, data[t, :, :])
+        dbio.ingest(dbname, filename, tt[ti[t]], table)
+        print("Imported {0} in {1}".format(tt[ti[0]].strftime("%Y-%m-%d"), table))
         os.remove(filename)
 
 
-def download(dbname, dt, bbox=None):
+def download(dbname, dts, bbox=None):
     """Downloads NCEP Reanalysis data from the IRI data server,
     and imports them into the database *db*. Optionally uses a bounding box to
     limit the region with [minlon, minlat, maxlon, maxlat]."""
+    # for dt in [dts[0] + timedelta(tt) for tt in range((dts[1] - dts[0]).days + 1)]:
     for varname in ["tmax", "tmin", "wind"]:
-        _downloadVariable(varname, dbname, dt, bbox)
+        _downloadVariable(varname, dbname, dts, bbox)

@@ -13,6 +13,26 @@ import sys
 import dbio
 from datetime import datetime, timedelta
 import numpy as np
+import gzip
+import zipfile
+
+
+def uncompress(filename, outpath):
+    """Uncompress archived files."""
+    if filename.endswith("gz"):
+        f = gzip.open("{0}/{1}".format(outpath, filename), 'rb')
+        contents = f.read()
+        f.close()
+        lfilename = filename.replace(".gz", "")
+        with open("{0}/{1}".format(outpath, lfilename), 'wb') as f:
+            f.write(contents)
+    elif filename.endswith("zip"):
+        f = zipfile.ZipFile("{0}/{1}".format(outpath, filename))
+        lfilename = filter(lambda s: s.endswith("tif"), f.namelist())[0]
+        f.extract(lfilename, outpath)
+    else:
+        lfilename = filename
+    return lfilename
 
 
 def readDatasetList(filename):
@@ -55,13 +75,10 @@ def spatialSubset(lat, lon, res, bbox):
         j1 = 0
         j2 = len(lat)-1
     else:
-        i1 = np.where(np.logical_and(bbox[1] >= lat-res/2, bbox[1] <= lat+res/2))[0][0]
-        i2 = np.where(np.logical_and(bbox[3] >= lat-res/2, bbox[3] <= lat+res/2))[0][-1]
-        j1 = np.where(np.logical_and(bbox[0] >= lon-res/2, bbox[0] <= lon+res/2))[0][0]
-        j2 = np.where(np.logical_and(bbox[2] >= lon-res/2, bbox[2] <= lon+res/2))[0][-1]
-        # account for latitude arrays oriented northwards
-        if i1 > i2:
-            i1, i2 = i2, i1
+        i1 = np.where(bbox[3] <= lat+res/2)[0][-1]
+        i2 = np.where(bbox[1] >= lat-res/2)[0][0]
+        j1 = np.where(bbox[0] >= lon-res/2)[0][-1]
+        j2 = np.where(bbox[2] <= lon+res/2)[0][0]
     return i1, i2+1, j1, j2+1
 
 
@@ -70,13 +87,14 @@ def download(dbname, conf):
     pass
 
 
-def ingest(dbname, table, data, lat, lon, res, t):
+def ingest(dbname, table, data, lat, lon, res, t, resample=True, overwrite=True):
     """Import data into RHEAS database."""
     if data is not None:
-        for tj in range(data.shape[0]):
-            filename = dbio.writeGeotif(lat, lon, res, data[tj, :, :])
-            dbio.ingest(dbname, filename, t[tj], table)
-            print("Imported {0} in {1}".format(t[tj].strftime("%Y-%m-%d"), table))
-            os.remove(filename)
+        if len(data.shape) > 2:
+            data = data[0, :, :]
+        filename = dbio.writeGeotif(lat, lon, res, data)
+        dbio.ingest(dbname, filename, t, table, resample, overwrite)
+        print("Imported {0} in {1}".format(t.strftime("%Y-%m-%d"), table))
+        os.remove(filename)
     else:
-        print("WARNING! No data were available to import into {0}.".format(table))
+        print("WARNING! No data were available to import into {0} for {1}.".format(table, t.strftime("%Y-%m-%d")))
